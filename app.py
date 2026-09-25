@@ -302,7 +302,7 @@ elif menu == "Auftragsliste & Verwaltung":
 
                 with col_b:
                     st.markdown("**Bild des Auftragsgebers:**")
-                    if row['image_path'] and os.path.exists(row['image_path']):
+                    if row.get('image_path') and isinstance(row['image_path'], str) and os.path.exists(row['image_path']):
                         st.image(row['image_path'], caption=row['title'], use_container_width=True)
                     else:
                         st.info("Kein Bild hochgeladen.")
