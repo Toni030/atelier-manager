@@ -36,11 +36,104 @@ def save_orders(df):
 def send_reminder_email(recipient, row):
     return True
 
+# Funktion zum Darstellen einer Auftragskarte
+def render_order_card(row):
+    sent_status_text = "✅ Bereits gesendet" if str(row.get('reminder_sent')) in ["1", "1.0"] else "⏳ Ausstehend"
+    
+    with st.expander(f"🎨 {row['customer_name']} - {row['title']} (Abgabe: {row['delivery_date']} | Status: {row['status']})"):
+        col_a, col_b = st.columns([2, 1])
+
+        with col_a:
+            st.markdown(f"**Bestelldatum:** {row['order_date']}")
+            st.markdown(f"**Preis:** {row.get('price', 0.0)}")
+            st.markdown(f"**Abgabetermin:** {row['delivery_date']}")
+            st.markdown(f"**Erinnerungs-Vorlauf:** {row.get('reminder_days_before', 2)} Tage vor Abgabe")
+            st.markdown(f"**Empfänger-E-Mail:** {row.get('notification_email', '')}")
+            st.markdown(f"**Erinnerungs-Status:** {sent_status_text}")
+            st.markdown(f"**Status:** {row['status']}")
+            st.markdown(f"**Genau gewünschte Details:**\n\n{row.get('wishes', '')}")
+
+            # Manuelle E-Mail Erinnerung
+            if st.button("📧 Erinnerung jetzt manuell senden", key=f"mail_{row['id']}"):
+                res = send_reminder_email(row.get('notification_email'), row)
+                if res is True:
+                    st.success("Erinnerungs-E-Mail erfolgreich gesendet!")
+                    st.rerun()
+
+            st.markdown("---")
+
+            # 1. PREIS ÄNDERN
+            try:
+                current_price = float(row.get('price') or 0.0)
+            except Exception:
+                current_price = 0.0
+
+            new_price = st.number_input("Preis anpassen", value=current_price, step=10.0, format="%.2f", key=f"price_up_{row['id']}")
+            if new_price != current_price:
+                df_updated = load_orders()
+                df_updated.loc[df_updated['id'] == row['id'], 'price'] = new_price
+                save_orders(df_updated)
+                st.success("Preis erfolgreich aktualisiert!")
+                st.rerun()
+
+            # 2. TERMIN ÄNDERN
+            try:
+                current_date = datetime.datetime.strptime(str(row.get('delivery_date')), "%Y-%m-%d").date()
+            except Exception:
+                current_date = datetime.date.today()
+
+            new_due_date = st.date_input("Termin (Abgabedatum) ändern", value=current_date, key=f"date_up_{row['id']}")
+            if str(new_due_date) != str(row.get('delivery_date')):
+                df_updated = load_orders()
+                df_updated.loc[df_updated['id'] == row['id'], 'delivery_date'] = str(new_due_date)
+                save_orders(df_updated)
+                st.success("Termin erfolgreich aktualisiert!")
+                st.rerun()
+
+            # 3. STATUS AKTUALISIEREN
+            status_options = ["Neu", "In Arbeit", "Versendet", "Abgeschlossen"]
+            current_status = str(row.get('status')) if str(row.get('status')) in status_options else "Neu"
+            
+            new_status = st.selectbox("Status aktualisieren", status_options, index=status_options.index(current_status), key=f"status_{row['id']}")
+            if new_status != str(row.get('status')):
+                df_updated = load_orders()
+                df_updated.loc[df_updated['id'] == row['id'], 'status'] = new_status
+                save_orders(df_updated)
+                st.rerun()
+
+            # 4. AUFTRAG LÖSCHEN
+            if st.button("Auftrag löschen", key=f"del_{row['id']}"):
+                df_updated = load_orders()
+                df_updated = df_updated[df_updated['id'] != row['id']]
+                save_orders(df_updated)
+                st.warning("Auftrag gelöscht!")
+                st.rerun()
+
+        with col_b:
+            st.markdown("**Bild des Auftragsgebers:**")
+            img_p = row.get('image_path')
+            if img_p and isinstance(img_p, str) and os.path.exists(img_p):
+                st.image(img_p, caption=row['title'], use_container_width=True)
+            else:
+                st.info("Kein Bild hochgeladen.")
+                new_img = st.file_uploader("Bild für diesen Auftrag hochladen", type=["jpg", "jpeg", "png"], key=f"img_up_{row['id']}")
+                if new_img is not None:
+                    os.makedirs("images", exist_ok=True)
+                    img_path = os.path.join("images", f"auftrag_{row['id']}_{new_img.name}")
+                    with open(img_path, "wb") as f:
+                        f.write(new_img.getbuffer())
+                    
+                    df_updated = load_orders()
+                    df_updated.loc[df_updated['id'] == row['id'], 'image_path'] = img_path
+                    save_orders(df_updated)
+                    st.success("Bild erfolgreich hinzugefügt!")
+                    st.rerun()
+
 # --------------------------------------------------------
 # BENUTZEROBERFLÄCHE
 # --------------------------------------------------------
 st.title("🎨 Atelier Auftrags- und Bildverwaltung")
-st.write("Verwalte deine Aufträge, Kundenwünsche, Preise, Termine, Bilder und E-Mail-Erinnerungen direkt in der Cloud.")
+st.write("Verwalte deine Aufträge, Kundenwünsche, Preise, Termine und Bilder synchron in der Cloud.")
 
 df = load_orders()
 
@@ -89,103 +182,34 @@ with st.sidebar.form("new_order_form", clear_on_submit=True):
 
             df = pd.concat([df, new_row], ignore_index=True)
             save_orders(df)
-            st.sidebar.success("Auftrag erfolgreich in Google Sheets gespeichert!")
+            st.sidebar.success("Auftrag erfolgreich gespeichert!")
             st.rerun()
 
-# --- HAUPTBEREICH: AUFTRÄGE ANZEIGEN ---
-st.header("📋 Alle Aufträge")
+# --- HAUPTBEREICH MIT TABS / REITER ---
+tab_active, tab_archive = st.tabs(["📋 Aktive Aufträge", "📦 Archiv (Abgeschlossen)"])
 
-if df.empty:
-    st.info("Noch keine Aufträge vorhanden. Erfasse deinen ersten Auftrag über das Menü links!")
-else:
-    for idx, row in df.iterrows():
-        sent_status_text = "✅ Bereits gesendet" if str(row.get('reminder_sent')) in ["1", "1.0"] else "⏳ Ausstehend"
-        
-        with st.expander(f"🎨 {row['customer_name']} - {row['title']} (Abgabe: {row['delivery_date']} | Status: {row['status']})"):
-            col_a, col_b = st.columns([2, 1])
+# REITER 1: AKTIVE AUFTRÄGE
+with tab_active:
+    st.header("Aktive Aufträge")
+    if df.empty:
+        st.info("Noch keine Aufträge vorhanden.")
+    else:
+        df_active = df[df['status'] != 'Abgeschlossen']
+        if df_active.empty:
+            st.info("Keine aktiven Aufträge vorhanden. Alle Aufträge sind abgeschlossen!")
+        else:
+            for idx, row in df_active.iterrows():
+                render_order_card(row)
 
-            with col_a:
-                st.markdown(f"**Bestelldatum:** {row['order_date']}")
-                st.markdown(f"**Preis:** {row.get('price', 0.0)}")
-                st.markdown(f"**Abgabetermin:** {row['delivery_date']}")
-                st.markdown(f"**Erinnerungs-Vorlauf:** {row.get('reminder_days_before', 2)} Tage vor Abgabe")
-                st.markdown(f"**Empfänger-E-Mail:** {row.get('notification_email', '')}")
-                st.markdown(f"**Erinnerungs-Status:** {sent_status_text}")
-                st.markdown(f"**Status:** {row['status']}")
-                st.markdown(f"**Genau gewünschte Details:**\n\n{row.get('wishes', '')}")
-
-                # Manuelle E-Mail Erinnerung
-                if st.button("📧 Erinnerung jetzt manuell senden", key=f"mail_{row['id']}"):
-                    res = send_reminder_email(row.get('notification_email'), row)
-                    if res is True:
-                        st.success("Erinnerungs-E-Mail erfolgreich gesendet!")
-                        st.rerun()
-
-                st.markdown("---")
-
-                # 1. PREIS ÄNDERN
-                try:
-                    current_price = float(row.get('price') or 0.0)
-                except Exception:
-                    current_price = 0.0
-
-                new_price = st.number_input("Preis anpassen", value=current_price, step=10.0, format="%.2f", key=f"price_up_{row['id']}")
-                if new_price != current_price:
-                    df_updated = load_orders()
-                    df_updated.loc[df_updated['id'] == row['id'], 'price'] = new_price
-                    save_orders(df_updated)
-                    st.success("Preis erfolgreich aktualisiert!")
-                    st.rerun()
-
-                # 2. TERMIN ÄNDERN
-                try:
-                    current_date = datetime.datetime.strptime(str(row.get('delivery_date')), "%Y-%m-%d").date()
-                except Exception:
-                    current_date = datetime.date.today()
-
-                new_due_date = st.date_input("Termin (Abgabedatum) ändern", value=current_date, key=f"date_up_{row['id']}")
-                if str(new_due_date) != str(row.get('delivery_date')):
-                    df_updated = load_orders()
-                    df_updated.loc[df_updated['id'] == row['id'], 'delivery_date'] = str(new_due_date)
-                    save_orders(df_updated)
-                    st.success("Termin erfolgreich aktualisiert!")
-                    st.rerun()
-
-                # 3. STATUS AKTUALISIEREN
-                status_options = ["Neu", "In Arbeit", "Versendet", "Abgeschlossen"]
-                current_status = str(row.get('status')) if str(row.get('status')) in status_options else "Neu"
-                
-                new_status = st.selectbox("Status aktualisieren", status_options, index=status_options.index(current_status), key=f"status_{row['id']}")
-                if new_status != str(row.get('status')):
-                    df_updated = load_orders()
-                    df_updated.loc[df_updated['id'] == row['id'], 'status'] = new_status
-                    save_orders(df_updated)
-                    st.rerun()
-
-                # 4. AUFTRAG LÖSCHEN
-                if st.button("Auftrag löschen", key=f"del_{row['id']}"):
-                    df_updated = load_orders()
-                    df_updated = df_updated[df_updated['id'] != row['id']]
-                    save_orders(df_updated)
-                    st.warning("Auftrag gelöscht!")
-                    st.rerun()
-
-            with col_b:
-                st.markdown("**Bild des Auftragsgebers:**")
-                img_p = row.get('image_path')
-                if img_p and isinstance(img_p, str) and os.path.exists(img_p):
-                    st.image(img_p, caption=row['title'], use_container_width=True)
-                else:
-                    st.info("Kein Bild hochgeladen.")
-                    new_img = st.file_uploader("Bild für diesen Auftrag hochladen", type=["jpg", "jpeg", "png"], key=f"img_up_{row['id']}")
-                    if new_img is not None:
-                        os.makedirs("images", exist_ok=True)
-                        img_path = os.path.join("images", f"auftrag_{row['id']}_{new_img.name}")
-                        with open(img_path, "wb") as f:
-                            f.write(new_img.getbuffer())
-                        
-                        df_updated = load_orders()
-                        df_updated.loc[df_updated['id'] == row['id'], 'image_path'] = img_path
-                        save_orders(df_updated)
-                        st.success("Bild erfolgreich hinzugefügt!")
-                        st.rerun()
+# REITER 2: ARCHIV
+with tab_archive:
+    st.header("Abgeschlossene Aufträge")
+    if df.empty:
+        st.info("Das Archiv ist leer.")
+    else:
+        df_archive = df[df['status'] == 'Abgeschlossen']
+        if df_archive.empty:
+            st.info("Noch keine abgeschlossenen Aufträge im Archiv.")
+        else:
+            for idx, row in df_archive.iterrows():
+                render_order_card(row)
